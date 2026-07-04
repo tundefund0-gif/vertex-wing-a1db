@@ -112,30 +112,22 @@ async def chat(request: Request):
 
             if stream:
                 async def generate(prov=prov_name):
-                    buf = ""
+                    full = ""
                     for chunk in response:
                         if isinstance(chunk, str) and chunk:
-                            buf += chunk
-                            # Check if this chunk completes a TOOL_CALL
-                            if "TOOL_CALL:" in buf:
-                                # For streaming, we send content as-is (client parses it)
-                                pass
-                            data = {
-                                "id": cid,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": model,
-                                "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}]
-                            }
-                            yield f"data: {json.dumps(data)}\n\n"
-                    done = {
-                        "id": cid,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-                    }
-                    yield f"data: {json.dumps(done)}\n\n"
+                            full += chunk
+                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'content': chunk}, 'finish_reason': None}]})}\n\n"
+
+                    # After stream completes, check for tool calls
+                    tool_calls = _parse_tool_calls(full) if tools else None
+                    if tool_calls:
+                        # Send tool_calls delta
+                        for tc in tool_calls:
+                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'tool_calls': [tc]}, 'finish_reason': None}]})}\n\n"
+                        # Final chunk with finish_reason=tool_calls
+                        yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
                     yield "data: [DONE]\n\n"
 
                 return StreamingResponse(generate(prov_name), media_type="text/event-stream",
