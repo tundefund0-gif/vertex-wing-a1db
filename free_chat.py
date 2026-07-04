@@ -1,4 +1,5 @@
-import json, time, uuid
+"""Free AI Chat with OpenAI-compatible API + tool calling support via g4f."""
+import json, re, time, uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,23 +23,86 @@ MODELS = {
     "llama": "Meta Llama",
 }
 
+# Regex to match TOOL_CALL: {...} in model output
+TOOL_CALL_RE = re.compile(r'TOOL_CALL:\s*(\{.*?\})(?:\n|$)', re.DOTALL)
+
+
+def _build_tools_system(tools: list) -> str:
+    """Build a system message describing available tools."""
+    parts = ["You have access to the following tools. When you need to use a tool, "
+             "respond with EXACTLY one TOOL_CALL per line like this:",
+             'TOOL_CALL: {"name": "tool_name", "arguments": {"key": "value"}}',
+             "Do NOT explain what you're doing - just output the TOOL_CALL line(s).",
+             "If no tool is needed, respond with normal text.", "",
+             "Available tools:"]
+    for t in tools:
+        fn = t.get("function", t)
+        name = fn.get("name", "unknown")
+        desc = fn.get("description", "")
+        parts.append(f"- {name}: {desc}")
+    return "\n".join(parts)
+
+
+def _parse_tool_calls(text: str) -> list[dict] | None:
+    """Parse TOOL_CALL lines from model output. Returns list of tool_calls or None."""
+    matches = TOOL_CALL_RE.findall(text)
+    if not matches:
+        return None
+    calls = []
+    for i, m in enumerate(matches):
+        try:
+            parsed = json.loads(m.strip())
+            calls.append({
+                "id": f"call_{uuid.uuid4().hex[:12]}",
+                "type": "function",
+                "function": {
+                    "name": parsed.get("name", ""),
+                    "arguments": json.dumps(parsed.get("arguments", {}))
+                }
+            })
+        except json.JSONDecodeError:
+            continue
+    return calls if calls else None
+
+
+def _strip_tool_calls(text: str) -> str:
+    """Remove TOOL_CALL lines from text, returning only the natural language part."""
+    return TOOL_CALL_RE.sub("", text).strip()
+
+
 @app.get("/v1/models")
-def list_models():
+async def list_models():
     return {"object": "list", "data": [{"id": n, "object": "model", "owned_by": "free"} for n in MODELS]}
+
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     body = await request.json()
     model = body.get("model", "gpt-4o-mini")
-    messages = body.get("messages", [])
+    messages = list(body.get("messages", []))
     stream = body.get("stream", False)
+    tools = body.get("tools", [])
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
+
+    # Inject tool definitions into messages if tools are provided
+    if tools:
+        tool_system = _build_tools_system(tools)
+        # Find the system message or prepend
+        sys_idx = -1
+        for i, m in enumerate(messages):
+            if m.get("role") == "system":
+                sys_idx = i
+                break
+        sys_msg = {"role": "system", "content": tool_system}
+        if sys_idx >= 0:
+            messages[sys_idx]["content"] += "\n\n" + tool_system
+        else:
+            messages.insert(0, sys_msg)
 
     last_err = None
     for prov_name, prov_class, prov_model in PROVIDERS:
         try:
-            print(f"[CHAT] Trying {prov_name} with {prov_model}...")
             response = g4f.ChatCompletion.create(
                 model=prov_model,
                 messages=messages,
@@ -47,9 +111,15 @@ async def chat(request: Request):
             )
 
             if stream:
-                async def generate():
+                async def generate(prov=prov_name):
+                    buf = ""
                     for chunk in response:
                         if isinstance(chunk, str) and chunk:
+                            buf += chunk
+                            # Check if this chunk completes a TOOL_CALL
+                            if "TOOL_CALL:" in buf:
+                                # For streaming, we send content as-is (client parses it)
+                                pass
                             data = {
                                 "id": cid,
                                 "object": "chat.completion.chunk",
@@ -68,23 +138,30 @@ async def chat(request: Request):
                     yield f"data: {json.dumps(done)}\n\n"
                     yield "data: [DONE]\n\n"
 
-                return StreamingResponse(generate(), media_type="text/event-stream",
+                return StreamingResponse(generate(prov_name), media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
             else:
                 txt = ""
                 for chunk in response:
                     if isinstance(chunk, str):
                         txt += chunk
-                print(f"[CHAT] {prov_name} success: {len(txt)} chars")
+
+                # Parse tool calls from the response
+                tool_calls = _parse_tool_calls(txt) if tools else None
+                content = _strip_tool_calls(txt) if tool_calls else txt
+
+                msg = {"role": "assistant", "content": content or None}
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
+
                 return JSONResponse({
                     "id": cid, "object": "chat.completion", "created": created,
                     "model": model,
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": txt}, "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "message": msg, "finish_reason": "tool_calls" if tool_calls else "stop"}],
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 })
         except Exception as e:
             last_err = e
-            print(f"[CHAT] {prov_name} failed: {e}")
             continue
 
     err = f"All providers failed. Last error: {last_err}"
@@ -99,6 +176,7 @@ async def chat(request: Request):
             yield "data: [DONE]\n\n"
         return StreamingResponse(err_gen(), media_type="text/event-stream")
     return JSONResponse({"error": err}, status_code=502)
+
 
 PAGE = r"""<!DOCTYPE html>
 <html><head>
@@ -185,13 +263,15 @@ function addM(role,content,mdl){
 }
 </script></body></html>"""
 
+
 @app.get("/", response_class=HTMLResponse)
-def index():
+async def index():
     return PAGE
 
+
 if __name__ == "__main__":
-    print("="*50)
-    print("  Free AI Chat Server")
+    print("=" * 50)
+    print("  Free AI Chat Server (with tool calling support)")
     print("  Open http://localhost:9191")
-    print("="*50)
+    print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=9191)
