@@ -1,5 +1,5 @@
 """Free AI Chat with OpenAI-compatible API + tool calling support via g4f."""
-import json, re, time, uuid
+import json, time, uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,8 +23,79 @@ MODELS = {
     "llama": "Meta Llama",
 }
 
-# Regex to match TOOL_CALL: {...} in model output
-TOOL_CALL_RE = re.compile(r'TOOL_CALL:\s*(\{.*?\})(?:\n|$)', re.DOTALL)
+def _parse_tool_calls(text: str) -> list[dict] | None:
+    """Parse TOOL_CALL lines from model output using brace counting."""
+    calls = []
+    i = 0
+    while True:
+        idx = text.find("TOOL_CALL:", i)
+        if idx < 0:
+            break
+        brace_start = text.find("{", idx)
+        if brace_start < 0:
+            i = idx + 9
+            continue
+        depth = 0
+        j = brace_start
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth == 0:
+            try:
+                parsed = json.loads(text[brace_start:j + 1])
+                calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": parsed.get("name", ""),
+                        "arguments": json.dumps(parsed.get("arguments", {}))
+                    }
+                })
+            except json.JSONDecodeError:
+                pass
+            i = j + 1
+        else:
+            i = idx + 9
+    return calls if calls else None
+
+
+def _strip_tool_calls(text: str) -> str:
+    """Remove TOOL_CALL lines from text using brace counting."""
+    result = []
+    i = 0
+    while True:
+        idx = text.find("TOOL_CALL:", i)
+        if idx < 0:
+            result.append(text[i:])
+            break
+        # Include text before this TOOL_CALL
+        result.append(text[i:idx])
+        brace_start = text.find("{", idx)
+        if brace_start < 0:
+            result.append(text[idx:idx + 9])
+            i = idx + 9
+            continue
+        depth = 0
+        j = brace_start
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth == 0:
+            i = j + 1  # Skip the entire TOOL_CALL
+        else:
+            result.append(text[idx:idx + 9])
+            i = idx + 9
+    return "".join(result).strip()
 
 
 def _build_tools_system(tools: list) -> str:
@@ -41,33 +112,6 @@ def _build_tools_system(tools: list) -> str:
         desc = fn.get("description", "")
         parts.append(f"- {name}: {desc}")
     return "\n".join(parts)
-
-
-def _parse_tool_calls(text: str) -> list[dict] | None:
-    """Parse TOOL_CALL lines from model output. Returns list of tool_calls or None."""
-    matches = TOOL_CALL_RE.findall(text)
-    if not matches:
-        return None
-    calls = []
-    for i, m in enumerate(matches):
-        try:
-            parsed = json.loads(m.strip())
-            calls.append({
-                "id": f"call_{uuid.uuid4().hex[:12]}",
-                "type": "function",
-                "function": {
-                    "name": parsed.get("name", ""),
-                    "arguments": json.dumps(parsed.get("arguments", {}))
-                }
-            })
-        except json.JSONDecodeError:
-            continue
-    return calls if calls else None
-
-
-def _strip_tool_calls(text: str) -> str:
-    """Remove TOOL_CALL lines from text, returning only the natural language part."""
-    return TOOL_CALL_RE.sub("", text).strip()
 
 
 @app.get("/v1/models")
