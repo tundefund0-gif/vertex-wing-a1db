@@ -4,20 +4,16 @@ AI agent with full shell access to your Android device via Termux-MCP. Features 
 
 ## Quick Start
 
+One command installs everything — MCP server, AI agent, and Free AI Chat:
+
 ```bash
-# 1. Install MCP server
-git clone https://github.com/tundefund0-gif/termux-mcp /termux-mcp
-cd /termux-mcp && python3 -m venv venv && source venv/bin/activate && pip install .
-
-# 2. Install agent
-git clone https://github.com/tundefund0-gif/vertex-wing-a1db /termux-mcp-agent
-cd /termux-mcp-agent && python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-
-# 3. Start with Free AI Chat (no API key needed)
+git clone https://github.com/tundefund0-gif/vertex-wing-a1db
+cd vertex-wing-a1db
+bash install.sh
 ./start_free.sh
 ```
+
+That's it. No API keys, no separate repos, no manual steps.
 
 ## Free AI Chat
 
@@ -117,6 +113,8 @@ curl -X POST http://127.0.0.1:9876/chat -H "Content-Type: application/json" \
 └─────────────┘     └──────────────┘     └──────────────────┘
 ```
 
+All three components are in this single repo. No separate installs needed.
+
 ## Testing
 
 ```bash
@@ -154,5 +152,4 @@ TOOL_DEFINITIONS = [
 
 ## Related
 
-- [Termux-MCP Server](https://github.com/tundefund0-gif/termux-mcp) — MCP server for Android device access
-- [Free AI Chat](https://github.com/tundefund0-gif/free-ai-chat) — Standalone free AI chat server
+- [Free AI Chat](https://github.com/tundefund0-gif/free-ai-chat) — Standalone version of the free chat server

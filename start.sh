@@ -4,9 +4,8 @@ set -e
 # Start script for termux-mcp-agent
 # Launches both MCP server and the Textual TUI agent
 
-MCP_DIR="${MCP_DIR:-/termux-mcp}"
-AGENT_DIR="${AGENT_DIR:-/termux-mcp-agent}"
-VENV_DIR="${VENV_DIR:-${MCP_DIR}/venv}"
+AGENT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="${VENV_DIR:-${AGENT_DIR}/.venv}"
 MCP_LOG="${MCP_LOG:-/tmp/mcp.log}"
 AGENT_LOG="${AGENT_LOG:-/tmp/agent.log}"
 
@@ -28,7 +27,7 @@ sleep 1
 echo -e "${YELLOW}[2/4]${NC} Starting MCP server..."
 if [ ! -d "$VENV_DIR" ]; then
     echo -e "${RED}Error: Virtual env not found at $VENV_DIR${NC}"
-    echo "Run: cd $MCP_DIR && python3 -m venv venv && source venv/bin/activate && pip install ."
+    echo "Run: cd $AGENT_DIR && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
     exit 1
 fi
 setsid "$VENV_DIR/bin/python" -m termux_mcp > "$MCP_LOG" 2>&1 &
