@@ -174,15 +174,18 @@ async def test_llm_connectivity():
     from agent import _make_llm_client
     from config import Config
 
+    base_url = os.environ.get("LLM_BASE_URL", "https://opencode.ai/zen/v1")
+    model = os.environ.get("LLM_MODEL", "deepseek-v4-flash-free")
+
     cfg = Config(
-        llm_base_url="https://opencode.ai/zen/v1",
-        llm_model="deepseek-v4-flash-free",
+        llm_base_url=base_url,
+        llm_model=model,
     )
     client = _make_llm_client(cfg)
 
     try:
         response = await client.chat.completions.create(
-            model="deepseek-v4-flash-free",
+            model=model,
             messages=[{"role": "user", "content": "Say hello in one word"}],
             max_tokens=2000,
             temperature=0.1,
@@ -195,7 +198,7 @@ async def test_llm_connectivity():
 
     try:
         stream = await client.chat.completions.create(
-            model="deepseek-v4-flash-free",
+            model=model,
             messages=[{"role": "user", "content": "Say hello"}],
             stream=True,
             max_tokens=2000,
